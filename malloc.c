@@ -3,7 +3,7 @@
  * 
  * THIS WAS FOLLOWING THE GUIDE AT https://arjunsreedharan.org/
  * 
- * Not all of this code is my own. This project was done for learning purposes
+ * The Malloc and Get_free_block are not mine. This project was done for learning purposes
  * 
  * 
  * 
@@ -11,6 +11,8 @@
 
 #include <stdio.h>
 #include <pthread.h>
+#include <stdint.h>
+#include <string.h>
 
 typedef char ALIGN[16];
 
@@ -24,7 +26,7 @@ union header {
 };
 
 typedef union header header_t;
-header_t *head, *tail;
+header_t *head, *tail = NULL;
 pthread_mutex_t global_malloc_lock;
 
 // Search for a free block of memory in our allocated memory
@@ -43,7 +45,7 @@ header_t *get_free_block(size_t size) {
 }
 
 // This function allocates a specified amount of bytes and will return a pointer to where that memory is
-void *malloc(size_t size) {
+void *my_malloc(size_t size) {
 	size_t total_size;
 	void *block;
 	header_t *header;
@@ -63,18 +65,17 @@ void *malloc(size_t size) {
 		return ((void*) header+1); // return header+1 because we want it to start at the memory block which is right after the header in memory so pointer is now +1 further
 	}
 
-	// If we get here then there wasn't memory we could use so we have to extend our memory by the header + the requested size.
-	block = sbrk(size + sizeof(header_t)); // this extends the memory we have and returns the pointer to the start of it
+	total_size = size + sizeof(header_t); 
+	block = sbrk(total_size);
 
-	// check if the block space was extended successfully
 	if (block == (void*) -1) {
 		pthread_mutex_unlock(&global_malloc_lock);
 		return NULL;
 	}
 
-	// Set all the values for this header since we allocated it
 	header = block;
-	header->s.size = size;
+	header->s.size = size; // now this should work without causing a segfault
+
 	header->s.is_free = 0;
 	header->s.next = NULL;
 
@@ -96,7 +97,12 @@ void *malloc(size_t size) {
 	return ((void*) header+1);
 }
 
-void free(void *block) {
+void my_free(void *block) {
+	
+    if (!block) {
+        return;
+    }
+
 	// Get header of current block
 	header_t *blockHeader = ((header_t *)block-1); // go back by 1 header_t amount
 
@@ -109,9 +115,9 @@ void free(void *block) {
 	// Determine if block to be freed is at the end of the heap by comparing pointers
 	if (blockHeader == tailHeader) {
 		// Release to the OS
-		sbrk(0 - sizeof(header_t) - blockHeader->s.size);
+		void *result = sbrk(0-sizeof(header_t)-blockHeader->s.size);
 
-		if (block == (void*) -1) {
+		if (result == (void*) -1) {
 			pthread_mutex_unlock(&global_malloc_lock);	
 			return;
 		}
@@ -134,13 +140,52 @@ void free(void *block) {
 	pthread_mutex_unlock(&global_malloc_lock);	
 	return;
 }
-	
-int main() {
-	pthread_mutex_init(&global_malloc_lock, NULL);
-    void *block1 = malloc(8);
-    void *block2 = malloc(16);
-    void *block3 = malloc(32);
 
-    // Perform operations on the allocated blocks
-    return 0;
+void *my_calloc(size_t num, size_t nsize) {
+	void *block;
+	if (num || nsize == 0) {
+		return NULL;
+	}
+	block = my_malloc(num*nsize);
+	if(block == 0) {
+		return NULL;
+	}
+	memset(block, 0, num * nsize);
+	return block;
+}
+
+void *my_realloc(void *block, size_t size) {
+    if (!block) {
+        return my_malloc(size);
+    }
+    if (size == 0) {
+        my_free(block);
+        return NULL;
+    }
+
+    pthread_mutex_lock(&global_malloc_lock);
+	
+    header_t *blockHeader = ((header_t*)block - 1);
+
+    if (size <= blockHeader->s.size) {
+        pthread_mutex_unlock(&global_malloc_lock);
+        return block;
+    }
+
+    void *new_block = my_malloc(size);
+    if (!new_block) {
+        pthread_mutex_unlock(&global_malloc_lock);
+        return NULL; 
+    }
+
+    size_t old_size = blockHeader->s.size;
+    if (size < old_size) {
+        old_size = size;
+    }
+
+    memcpy(new_block, block, old_size);
+    my_free(block);
+    pthread_mutex_unlock(&global_malloc_lock);
+	
+    return new_block;
 }
